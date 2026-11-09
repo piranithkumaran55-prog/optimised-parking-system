@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Optimised Parking System</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080f20;color:white;font-family:Arial}
+header{background:#101d38;padding:20px;text-align:center;color:#35baff}
+main{max-width:1100px;margin:auto;padding:18px}
+section,.card{background:#111d35;padding:17px;border-radius:12px;margin:15px 0}
+h2{color:#35baff}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.card{text-align:center;margin:0}
+.number{font-size:30px;color:#35baff}
+input,button{padding:12px;border:0;border-radius:7px;margin:5px}
+input{max-width:100%;background:#eaf3ff}
+button{background:#168bd0;color:white;cursor:pointer}
+button:hover{background:#0871b5}
+.slotgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.slot{padding:18px 5px;text-align:center;border-radius:8px;cursor:pointer}
+.available{background:#087c57}
+.occupied{background:#a83242}
+#map{height:350px;border-radius:10px}
+table{width:100%;border-collapse:collapse}
+td,th{padding:9px;border-bottom:1px solid #34415a;text-align:left}
+small{color:#aabbd2}
+@media(max-width:500px){.slotgrid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+<h1>OPTIMISED PARKING SYSTEM</h1>
+<p>WITH GPS TRACKING</p>
+</header>
+<main>
+
+<section>
+<h2>Dashboard</h2>
+<div class="cards">
+<div class="card">Total Slots<div class="number" id="total">10</div></div>
+<div class="card">Occupied<div class="number" id="occupied">0</div></div>
+<div class="card">Available<div class="number" id="available">10</div></div>
+</div>
+</section>
+
+<section>
+<h2>Vehicle Parking</h2>
+<input id="vehicle" placeholder="Enter vehicle number">
+<br>
+<button onclick="allocate()">Allocate</button>
+<button onclick="release()">Release</button>
+<button onclick="recommend()">Recommend Slot</button>
+<p id="parkingMsg">Ready</p>
+</section>
+
+<section>
+<h2>Parking Slots</h2>
+<div class="slotgrid" id="slots"></div>
+</section>
+
+<section>
+<h2>Parking Slot Navigation</h2>
+<div id="navigation">Select a parking slot to view its position.</div>
+</section>
+
+<section>
+<h2>Parking History</h2>
+<div style="overflow-x:auto">
+<table>
+<thead><tr><th>Vehicle</th><th>Slot</th><th>Allocated</th><th>Released</th><th>Status</th></tr></thead>
+<tbody id="history"></tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>GPS Tracking</h2>
+<input id="gpsVehicle" placeholder="Enter registered vehicle number">
+<button onclick="trackVehicle()">Track Vehicle</button>
+<p id="gpsStatus">Waiting for vehicle...</p>
+<div id="map"></div>
+<small>Automatic refresh every 5 seconds. Requires new coordinates from a GPS source.</small>
+</section>
+
+<section>
+<h2>Analytics</h2>
+<div class="cards">
+<div class="card">Total Allocations<div class="number" id="allocations">0</div></div>
+<div class="card">Unique Vehicles<div class="number" id="unique">0</div></div>
+<div class="card">Currently Parked<div class="number" id="parked">0</div></div>
+</div>
+<h3>Daily Activity</h3>
+<canvas id="dailyChart"></canvas>
+<h3>Most Used Slots</h3>
+<canvas id="slotChart"></canvas>
+</section>
+
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API="";
+let map=L.map('map').setView([11.0168,76.9558],12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+attribution:'© OpenStreetMap'
+}).addTo(map);
+
+let markers={};
+let dailyChart=null,slotChart=null;
+let currentVehicle="";
+
+const positions=[
+"Front Left","Front Centre-Left","Front Centre",
+"Front Centre-Right","Front Right",
+"Back Left","Back Centre-Left","Back Centre",
+"Back Centre-Right","Back Right"
+];
+
+async function get(url){
+let r=await fetch(API+url);
+if(!r.ok)throw Error(await r.text());
+return r.json();
+}
+
+async function post(url,data){
+let r=await fetch(API+url,{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify(data)
+});
+let result=await r.json();
+if(!r.ok)throw Error(result.detail||"Request failed");
+return result;
+}
+
+async function loadParking(){
+try{
+let d=await get("/parking");
+total.textContent=d.total_slots;
+occupied.textContent=d.occupied_slots;
+available.textContent=d.available_slots;
+
+let s=await get("/parking/slots");
+slots.innerHTML="";
+s.forEach(x=>{
+let div=document.createElement("div");
+div.className="slot "+(x.status==="Occupied"?"occupied":"available");
+div.innerHTML="<b>"+x.slot_number+"</b><br>"+x.status;
+div.onclick=()=>navigate(x.slot_number,x.status);
+slots.appendChild(div);
+});
+}catch(e){parkingMsg.textContent="Parking error: "+e.message;}
+}
+
+function navigate(slot,status){
+let n=parseInt(slot.replace("P",""))-1;
+navigation.innerHTML="<b>"+slot+"</b><br>Position: "+
+(positions[n]||"Unknown")+"<br>Status: "+status;
+}
+
+async function allocate(){
+let v=vehicle.value.trim().toUpperCase();
+if(!v)return alert("Enter vehicle number");
+try{
+let d=await post("/parking/allocate",{vehicle_number:v});
+parkingMsg.textContent=d.message||("Allocated: "+d.slot_number);
+await refreshAll();
+}catch(e){parkingMsg.textContent=e.message;}
+}
+
+async function release(){
+let v=vehicle.value.trim().toUpperCase();
+if(!v)return alert("Enter vehicle number");
+try{
+let d=await post("/parking/release",{vehicle_number:v});
+parkingMsg.textContent=d.message||("Released: "+d.slot_number);
+await refreshAll();
+}catch(e){parkingMsg.textContent=e.message;}
+}
+
+async function recommend(){
+try{
+let s=await get("/parking/slots");
+let free=s.find(x=>x.status==="Available");
+parkingMsg.textContent=free?
+"Recommended slot: "+free.slot_number:
+"No available slots";
+}catch(e){parkingMsg.textContent=e.message;}
+}
+
+async function loadHistory(){
+try{
+let d=await get("/parking/history");
+history.innerHTML="";
+d.forEach(x=>{
+let tr=document.createElement("tr");
+[x.vehicle_number,x.slot_number,x.allocated_at,x.released_at||"-",x.status]
+.forEach(value=>{
+let td=document.createElement("td");
+td.textContent=value??"-";
+tr.appendChild(td);
+});
+history.appendChild(tr);
+});
+}catch(e){console.log(e);}
+}
+
+async function loadAnalytics(){
+try{
+let d=await get("/parking/analytics");
+allocations.textContent=d.total_allocations;
+unique.textContent=d.unique_vehicles;
+parked.textContent=d.currently_parked;
+
+if(dailyChart)dailyChart.destroy();
+dailyChart=new Chart(document.getElementById("dailyChart"),{
+type:"bar",
+data:{
+labels:d.daily_activity.map(x=>x.date),
+datasets:[{label:"Vehicles",data:d.daily_activity.map(x=>x.vehicles)}]
+},
+options:{responsive:true}
+});
+
+if(slotChart)slotChart.destroy();
+slotChart=new Chart(document.getElementById("slotChart"),{
+type:"bar",
+data:{
+labels:d.most_used_slots.map(x=>x.slot),
+datasets:[{label:"Usage",data:d.most_used_slots.map(x=>x.usage)}]
+},
+options:{responsive:true}
+});
+}catch(e){console.log(e);}
+}
+
+async function trackVehicle(){
+let v=gpsVehicle.value.trim().toUpperCase();
+if(!v)return alert("Enter vehicle number");
+currentVehicle=v;
+await updateGPS();
+}
+
+async function updateGPS(){
+if(!currentVehicle)return;
+try{
+let d=await get("/bus/"+encodeURIComponent(currentVehicle));
+let lat=Number(d.latitude),lon=Number(d.longitude);
+if(!Number.isFinite(lat)||!Number.isFinite(lon))
+throw Error("Invalid GPS coordinates");
+
+let point=[lat,lon];
+if(!markers[currentVehicle]){
+markers[currentVehicle]=L.marker(point).addTo(map)
+.bindPopup(currentVehicle);
+}else{
+markers[currentVehicle].setLatLng(point);
+}
+map.setView(point,14);
+gpsStatus.textContent=currentVehicle+" | "+lat+", "+lon+
+" | Last checked: "+new Date().toLocaleTimeString();
+}catch(e){
+gpsStatus.textContent="GPS: "+e.message;
+}
+}
+
+async function refreshAll(){
+await loadParking();
+await loadHistory();
+await loadAnalytics();
+}
+
+refreshAll();
+setInterval(loadParking,5000);
+setInterval(loadHistory,10000);
+setInterval(loadAnalytics,15000);
+setInterval(updateGPS,5000);
+</script>
+</body>
+</html>
